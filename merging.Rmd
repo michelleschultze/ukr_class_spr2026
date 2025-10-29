@@ -1,3 +1,342 @@
 Merging indicators:
 
-Oct 19 2025: base construction indicators and some inflation indicators. 
+This script demonstrates how we can merge data from Ukrstat into existing 
+long-form datasets. This is very easily adaptable for merging your own 
+indicators together!
+
+## Setup
+
+Load in packages
+```{r}
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(readr)
+```
+
+Load in data [version from Sept 18 2025]
+```{r}
+acled_work_imo_inner_join <- read_excel("Datasets/0 _ Unprocessed datasets/acled_work_imo_inner_join.xlsx")
+inflation_data <- read_excel("Datasets/0 _ Unprocessed datasets/dataset_2025-09-18T19_53_38.610113535Z_DEFAULT_INTEGRATION_SSSU_DF_PRICE_CHANGE_CONSUMER_GOODS_SERVICE_LATEST.xlsx")
+primary_market_data <- read_excel("Datasets/0 _ Unprocessed datasets/primary market data.xlsx")
+secondary_market_data <- read_excel("Datasets/0 _ Unprocessed datasets/secondary market data.xlsx")
+```
+Inflation data is from Ukrstat. 
+Real estate data is from ___.
+ACLED data is from ACLED website.
+Work data is from work.ua.
+
+Check data
+```{r}
+head(acled_work_imo_inner_join)
+head(inflation_data)
+```
+
+## Reshape ACLED dataset (acled_work_imo_inner_join) to long format for easier merging / cleaner organization.
+
+Get list of ACLED columns, which need to be handled differently.
+```{r}
+acled_cols <- acled_work_imo_inner_join %>%
+  select(starts_with("event_type_"), starts_with("sub_event_type_"), starts_with("disorder_type_")) %>%
+  names()
+```
+
+Because it's the same ACLED datapoint pasted across each of the job categories, 
+just take the average of these datapoints to get the correct value. (Could also 
+get the median, mode, etc instead.). Then put into long format under the 
+"category" variable so we can re-merge.
+```{r}
+#Summarize across the columns
+acled_data <- acled_work_imo_inner_join %>%
+  group_by(City, Date, Y, M) %>%
+  summarise(
+    across(all_of(acled_cols), mean, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#Pivot to long
+acled_long <- acled_data %>%
+  pivot_longer(
+    cols = all_of(acled_cols),
+    names_to = "Indicator",
+    values_to = "Value"
+  )
+```
+
+Now for the job data, put it in this same format. 
+```{r}
+job_cols <- c("Job Salary", "Resume Salary", "rate", "Job Salary, USD", "Resume Salary, USD")
+
+job_data <- acled_work_imo_inner_join %>%
+  group_by(City, Date, Y, M) %>%
+  select(all_of(job_cols), "Category")
+
+# Pivot longer and combine with Category
+job_long <- job_data %>%
+  pivot_longer(
+    cols = all_of(job_cols), 
+    names_to = "Indicator",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Indicator = paste(Indicator, Category, sep = ": ") 
+  ) %>%
+  select(City, Date, Y, M, Indicator, Value)
+```
+
+Stick them together to complete the reshaping
+```{r}
+# Combine job_long and acled_long
+acled_work_imo_inner_join <- bind_rows(job_long, acled_long)
+
+# Optional: sort by City and Date
+acled_work_imo_inner_join <- acled_work_imo_inner_join %>%
+  arrange(City, Date, Indicator)
+```
+
+
+## Reshape primary and secondary real estate market datasets to long format and merge with ACLED data to form an "ACLED+" dataset.
+
+```{r}
+#Secondary market data
+secondary_cols <- colnames(secondary_market_data)[!(colnames(secondary_market_data) %in% c("...1", "city", "date"))]
+
+secondary_long <- secondary_market_data %>%
+  rename(City = city, Date = date) %>%
+  mutate(
+    Y = year(Date),
+    M = month(Date)
+  ) %>%
+  pivot_longer(
+    cols = all_of(secondary_cols),
+    names_to = "Indicator",
+    values_to = "Value"
+  ) %>%
+  # Optionally, clean the indicator names
+  mutate(
+    Indicator = paste0("Secondary Market: ", Indicator)
+  ) %>%
+  select(City, Date, Y, M, Indicator, Value)
+
+
+#Primary market data
+primary_cols <- colnames(primary_market_data)[!(colnames(primary_market_data) %in% c("...1", "city", "date"))]
+
+primary_long <- primary_market_data %>%
+  rename(City = city, Date = date) %>%
+  mutate(
+    Y = year(Date),
+    M = month(Date)
+  ) %>%
+  pivot_longer(
+    cols = all_of(primary_cols),
+    names_to = "Indicator",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Indicator = paste0("Primary Market: ", Indicator)
+  ) %>%
+  select(City, Date, Y, M, Indicator, Value)
+
+
+#Get real estate market data into one long set ready to merge
+market_long <- bind_rows(primary_long, secondary_long)
+```
+
+Bind rows to make ACLED+ dataset (keeping same name for now).
+```{r}
+# Combine job_long and acled_long
+acled_work_imo_inner_join <- bind_rows(acled_work_imo_inner_join, market_long)
+```
+
+Some cities have alternate spellings. Standardize to match.
+```{r}
+#Check alternate spellings that are present
+unique(acled_work_imo_inner_join$City)
+
+#Standardize alternate spellings
+acled_work_imo_inner_join <- acled_work_imo_inner_join %>%
+  mutate(
+    City = case_when(
+      City == "Chernivitsi"      ~ "Chernivtsi",
+      City == "Dnipro"           ~ "Dnipropetrovsk",
+      City == "Khelmnytskyi"     ~ "Khmelnytskyi",
+      City == "Kropyvnytskyi"    ~ "Kirovohrad",
+      City == "Lutsk"            ~ "Volyn",
+      City == "Uzhhorod"         ~ "Zakarpattia", 
+      City == "Zaporizhzhia"     ~ "Zaporizhia",
+      TRUE                       ~ City  # leave all other cities unchanged
+    )
+  )
+```
+
+
+## Filter for timeframe/indicators of interest.
+
+Filter for indicators that have no NAs for the time window of interest: 2021-2024
+```{r}
+# Vector of monthly columns for 2022-2024
+months_2021_2024 <- c(
+  paste0("2021-M", sprintf("%02d", 1:12)),
+  paste0("2022-M", sprintf("%02d", 1:12)),
+  paste0("2023-M", sprintf("%02d", 1:12)),
+  paste0("2024-M", sprintf("%02d", 1:12))
+)
+
+# Filter indicators that have non-missing data for all months
+monthly_indicators_2021_24 <- inflation_data %>%
+  filter(Frequency == "Monthly") %>%
+  filter(if_all(all_of(months_2021_2024), ~ !is.na(.)))
+
+unique(monthly_indicators_2021_24$`Type of goods and services`)
+```
+
+Specify the goods we care about (very easy to trade out for other goods):
+```{r}
+price_indicators <- c(
+  # Food & Staples
+  "Poultry (chicken carcasses)",
+  "Milk formulas for baby food",
+  "Eggs",
+  "Potato",
+  "Rice",
+  "Butter",
+  "Sunflower oil",
+  "Beef",
+  "Pork",
+  "Beets",
+  "Fish",
+  "Milk",
+  "Sugar",
+  "Apples",
+  
+  # Energy & Transport
+  "Petrol A-92",
+  
+  # Housing & Utilities
+  "Electricity",
+  
+  # Health & Pharmaceuticals
+  
+  # Optional / Discretionary
+  "Cigarettes with a medium class filter"
+)
+```
+
+Filter for those goods.
+```{r}
+inflation_indicators_fulldata <- monthly_indicators_2021_24 %>%
+  filter(`Type of goods and services` %in% price_indicators)
+
+unique(inflation_indicators_fulldata$`Type of goods and services`)
+```
+
+Also filter for non-NA times. [results: Jan 2017-Aug 2025]
+```{r}
+inflation_indicators_fulldata <- inflation_indicators_fulldata %>%
+  select(where(~ !any(is.na(.))))
+```
+
+## Reshape to standardized format 
+
+Get a list of all of our time columns
+```{r}
+time_columns <- inflation_indicators_fulldata %>%
+  select(matches("^\\d{4}-M\\d{2}$")) %>%
+  names()
+```
+
+Reshape to match 
+```{r}
+inflation_indicators_reshape <- inflation_indicators_fulldata %>%
+  pivot_longer(
+    cols = all_of(time_columns),
+    names_to = "Date",
+    values_to = "Price level"
+  ) %>%
+  rename(Category = `Type of goods and services`) %>%
+  mutate(
+    Date = ym(gsub("-M", "-", Date)),
+    Date = as_datetime(Date),
+    Y = year(Date),
+    M = month(Date)
+  ) %>%
+  select(Category, Region, Date, `Price level`, Y, M, `Unit of measure`)
+```
+
+Match column structure by adding a standardized "Indicator" column
+```{r}
+inflation_indicators_reshape <- inflation_indicators_reshape %>%
+  mutate(
+    Indicator = paste0("Price Level (Oblast): ", Category, " (per ", `Unit of measure`, ")")
+  ) %>%
+  rename(Value = `Price level`) %>%  # rename for consistency with other datasets
+  select(Region = Region, Date, Y, M, Indicator, Value)  # choose final columns
+```
+
+## Join with existing dataset.
+
+Unfortunately our ACLED+ dataset has only cities, but each corresponds 1-to-1 
+as the center of an oblast. So we will merge with the idea of these being 
+"Price Levels (Oblast)" rather than for the city itself.
+```{r}
+unique(acled_work_imo_inner_join$City)
+unique(inflation_indicators_fulldata$Region)
+
+#Create a dictionary to make the merging repeatable [region = city]
+city_region_dict <- c(
+  "Vinnytsia"       = "Vinnytska",
+  "Zhytomyr"        = "Zhytomyrska",
+  "Ivano-Frankivsk" = "Ivano-Frankivska",
+  "Kirovohrad"      = "Kirovohradska",
+  "Lviv"            = "Lvivska",
+  "Poltava"         = "Poltavska",
+  "Zakarpattia"     = "Zakarpatska",
+  "Khmelnytskyi"    = "Khmelnytska",
+  "Chernivtsi"      = "Chernivetska",
+  "Kyiv"            = "Kyivska",
+  "Dnipropetrovsk"  = "Dnipropetrovska",
+  "Odesa"           = "Odeska",
+  "Zaporizhia"      = "Zaporizka",
+  "Volyn"           = "Volynska",
+  "Rivne"           = "Rivnenska",
+  "Sumy"            = "Sumska",
+  "Ternopil"        = "Ternopilska",
+  "Cherkasy"        = "Cherkaska",
+  "Chernihiv"       = "Chernihivska",
+  "Mykolaiv"        = "Mykolaivska",
+  "Kharkiv"         = "Kharkivska",
+  "Donetsk"         = "Donetska",
+  "Kherson"         = "Khersonska"
+)
+```
+
+```{r}
+#Add the region column
+acled_work_imo_inner_join <- acled_work_imo_inner_join %>%
+  mutate(Region = city_region_dict[City])
+
+#Make the inflation data also match
+inflation_indicators_reshape <- inflation_indicators_reshape %>%
+  mutate(
+    City = NA_character_
+  ) %>%
+  select(City, Date, Y, M, Indicator, Value, Region)
+```
+
+```{r}
+# Combine job_long and acled_long
+MASTER_DATASET <- bind_rows(acled_work_imo_inner_join, inflation_indicators_reshape)
+
+# Optional: sort by City and Date
+MASTER_DATASET <- MASTER_DATASET %>%
+  arrange(City, Date, Indicator)
+```
+
+## Export with timestamp.
+
+```{r}
+write_csv(MASTER_DATASET, "Datasets/1 _ Merged datasets/Fulldata_City_Region_Monthly_Oct292025.csv")
+```
+
