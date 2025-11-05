@@ -1,4 +1,5 @@
-Merging indicators:
+Title: Merging indicators (Ukrstat, )
+Author: Michelle Schultze
 
 This script demonstrates how we can merge data from Ukrstat into existing 
 long-form datasets. This is very easily adaptable for merging your own 
@@ -13,9 +14,10 @@ library(dplyr)
 library(lubridate)
 library(tidyr)
 library(readr)
+library(stringr)
 ```
 
-Load in data [version from Sept 18 2025]
+Load in data [originally gathered Sept 18 2025]
 ```{r}
 acled_work_imo_inner_join <- read_excel("Datasets/0 _ Unprocessed datasets/acled_work_imo_inner_join.xlsx")
 inflation_data <- read_excel("Datasets/0 _ Unprocessed datasets/dataset_2025-09-18T19_53_38.610113535Z_DEFAULT_INTEGRATION_SSSU_DF_PRICE_CHANGE_CONSUMER_GOODS_SERVICE_LATEST.xlsx")
@@ -23,7 +25,7 @@ primary_market_data <- read_excel("Datasets/0 _ Unprocessed datasets/primary mar
 secondary_market_data <- read_excel("Datasets/0 _ Unprocessed datasets/secondary market data.xlsx")
 ```
 Inflation data is from Ukrstat. 
-Real estate data is from ___.
+Real estate data is from lun.ua.
 ACLED data is from ACLED website.
 Work data is from work.ua.
 
@@ -80,21 +82,110 @@ job_long <- job_data %>%
     values_to = "Value"
   ) %>%
   mutate(
-    Indicator = paste(Indicator, Category, sep = ": ") 
+    Indicator = paste(Indicator, Category, sep = ": ")
+  ) %>% 
+  # Keep only one exchange rate indicator (e.g., the IT industry version)
+  filter(
+      str_detect(Indicator, "rate: IT, computers & Internet") |
+      !str_detect(Indicator, regex("rate", ignore_case = TRUE))
+    ) %>%
+  # Remove the industry part and make descriptive
+  mutate(
+    Indicator = ifelse(
+      str_detect(Indicator, "rate: IT, computers & Internet"),
+      "Exchange rate (Hrivna to USD, nationally for this month)",
+      Indicator
+    )
   ) %>%
   select(City, Date, Y, M, Indicator, Value)
+```
+Also, "Rate" is not descriptive enough. Add details: "Exchange rate (Hrivna to USD)", replacing the word "rate" for any indicator. Then because it's the same across industry datapoints, just keep one. (This is done within the code block above). 
+
+Add source column to both job_long and acled_long
+```{r}
+job_long <- job_long %>%
+  mutate(Source = if_else(str_detect(Indicator, regex("exchange rate", ignore_case = TRUE)),
+                          "CB of Ukraine", #exchange rate data is from here, not work.ua.
+                          "work.ua"))
+
+acled_long <- acled_long %>%
+  mutate(Source = "ACLED")
+```
+
+Correct mislabeling of City (work.ua) /Region (ACLED)
+```{r}
+#Rename relevant city names to be strictly city names and not region names
+job_long <- job_long %>%
+  mutate(City = recode(City,
+                       "Dnipropetrovsk" = "Dnipro",
+                       "Kirovohrad" = "Kropyvnytskyi",
+                       "Volyn" = "Lutsk",
+                       "Zakarpattia" = "Uzhhorod"),
+         Region = case_when(
+            City == "Cherkasy"        ~ "Cherkaska",
+            City == "Chernihiv"       ~ "Chernihivska",
+            City == "Chernivtsi"      ~ "Chernivetska",
+            City == "Dnipro"  ~ "Dnipropetrovska",
+            City == "Donetsk"         ~ "Donetska",
+            City == "Ivano-Frankivsk" ~ "Ivano-Frankivska",
+            City == "Kharkiv"         ~ "Kharkivska",
+            City == "Kherson"         ~ "Khersonska",
+            City == "Khmelnytskyi"    ~ "Khmelnytska",
+            City == "Kropyvnytskyi"      ~ "Kirovohradska",
+            City == "Kyiv"            ~ "Kyivska",
+            City == "Lviv"            ~ "Lvivska",
+            City == "Mykolaiv"        ~ "Mykolaivska",
+            City == "Odesa"           ~ "Odeska",
+            City == "Poltava"         ~ "Poltavska",
+            City == "Rivne"           ~ "Rivnenska",
+            City == "Sumy"            ~ "Sumska",
+            City == "Ternopil"        ~ "Ternopilska",
+            City == "Vinnytsia"       ~ "Vinnytska",
+            City == "Lutsk"           ~ "Volynska",
+            City == "Uzhhorod"     ~ "Zakarpatska",
+            City == "Zaporizhia"      ~ "Zaporizka",
+            City == "Zhytomyr"        ~ "Zhytomyrska"
+          ))
+
+#Rename city vector as regions, because that's the unit of analysis for ACLED
+acled_long <- acled_long %>%
+  mutate(Region = City,
+         City = NA,
+         Region = case_when(
+    Region == "Cherkasy"        ~ "Cherkaska",
+    Region == "Chernihiv"       ~ "Chernihivska",
+    Region == "Chernivtsi"      ~ "Chernivetska",
+    Region == "Dnipropetrovsk"  ~ "Dnipropetrovska",
+    Region == "Donetsk"         ~ "Donetska",
+    Region == "Ivano-Frankivsk" ~ "Ivano-Frankivska",
+    Region == "Kharkiv"         ~ "Kharkivska",
+    Region == "Kherson"         ~ "Khersonska",
+    Region == "Khmelnytskyi"    ~ "Khmelnytska",
+    Region == "Kirovohrad"      ~ "Kirovohradska",
+    Region == "Kyiv"            ~ "Kyivska",
+    Region == "Lviv"            ~ "Lvivska",
+    Region == "Mykolaiv"        ~ "Mykolaivska",
+    Region == "Odesa"           ~ "Odeska",
+    Region == "Poltava"         ~ "Poltavska",
+    Region == "Rivne"           ~ "Rivnenska",
+    Region == "Sumy"            ~ "Sumska",
+    Region == "Ternopil"        ~ "Ternopilska",
+    Region == "Vinnytsia"       ~ "Vinnytska",
+    Region == "Volyn"           ~ "Volynska",
+    Region == "Zakarpattia"     ~ "Zakarpatska",
+    Region == "Zaporizhia"      ~ "Zaporizka",
+    Region == "Zhytomyr"        ~ "Zhytomyrska"
+  ))
 ```
 
 Stick them together to complete the reshaping
 ```{r}
-# Combine job_long and acled_long
 acled_work_imo_inner_join <- bind_rows(job_long, acled_long)
 
-# Optional: sort by City and Date
+#Sort by City and Date
 acled_work_imo_inner_join <- acled_work_imo_inner_join %>%
-  arrange(City, Date, Indicator)
+  arrange(Region, City, Date, Indicator)
 ```
-
 
 ## Reshape primary and secondary real estate market datasets to long format and merge with ACLED data to form an "ACLED+" dataset.
 
@@ -141,7 +232,45 @@ primary_long <- primary_market_data %>%
 
 
 #Get real estate market data into one long set ready to merge
-market_long <- bind_rows(primary_long, secondary_long)
+market_long <- bind_rows(primary_long, secondary_long) %>%
+  mutate(Source = "lun.ua")
+```
+
+Check to make sure the cities are correct
+```{r}
+unique(market_long$City)
+#They exactly match. Now give them regions.
+
+#Rename relevant city names to be strictly city names and not region names
+market_long <- market_long %>%
+  mutate(Region = case_when(
+            City == "Cherkasy"        ~ "Cherkaska",
+            City == "Chernihiv"       ~ "Chernihivska",
+            City == "Chernivtsi"      ~ "Chernivetska",
+            City == "Chernivitsi"      ~ "Chernivetska", #alternate spelling
+            City == "Dnipro"  ~ "Dnipropetrovska",
+            City == "Donetsk"         ~ "Donetska",
+            City == "Ivano-Frankivsk" ~ "Ivano-Frankivska",
+            City == "Kharkiv"         ~ "Kharkivska",
+            City == "Kherson"         ~ "Khersonska",
+            City == "Khmelnytskyi"    ~ "Khmelnytska",
+            City == "Khelmnytskyi"    ~ "Khmelnytska", #alternate spelling
+            City == "Kropyvnytskyi"      ~ "Kirovohradska",
+            City == "Kyiv"            ~ "Kyivska",
+            City == "Lviv"            ~ "Lvivska",
+            City == "Mykolaiv"        ~ "Mykolaivska",
+            City == "Odesa"           ~ "Odeska",
+            City == "Poltava"         ~ "Poltavska",
+            City == "Rivne"           ~ "Rivnenska",
+            City == "Sumy"            ~ "Sumska",
+            City == "Ternopil"        ~ "Ternopilska",
+            City == "Vinnytsia"       ~ "Vinnytska",
+            City == "Lutsk"           ~ "Volynska",
+            City == "Uzhhorod"     ~ "Zakarpatska",
+            City == "Zaporizhia"      ~ "Zaporizka",
+            City == "Zaporizhzhia"      ~ "Zaporizka", #alternate spelling
+            City == "Zhytomyr"        ~ "Zhytomyrska"
+          ))
 ```
 
 Bind rows to make ACLED+ dataset (keeping same name for now).
@@ -149,28 +278,6 @@ Bind rows to make ACLED+ dataset (keeping same name for now).
 # Combine job_long and acled_long
 acled_work_imo_inner_join <- bind_rows(acled_work_imo_inner_join, market_long)
 ```
-
-Some cities have alternate spellings. Standardize to match.
-```{r}
-#Check alternate spellings that are present
-unique(acled_work_imo_inner_join$City)
-
-#Standardize alternate spellings
-acled_work_imo_inner_join <- acled_work_imo_inner_join %>%
-  mutate(
-    City = case_when(
-      City == "Chernivitsi"      ~ "Chernivtsi",
-      City == "Dnipro"           ~ "Dnipropetrovsk",
-      City == "Khelmnytskyi"     ~ "Khmelnytskyi",
-      City == "Kropyvnytskyi"    ~ "Kirovohrad",
-      City == "Lutsk"            ~ "Volyn",
-      City == "Uzhhorod"         ~ "Zakarpattia", 
-      City == "Zaporizhzhia"     ~ "Zaporizhia",
-      TRUE                       ~ City  # leave all other cities unchanged
-    )
-  )
-```
-
 
 ## Filter for timeframe/indicators of interest.
 
@@ -269,60 +376,11 @@ Match column structure by adding a standardized "Indicator" column
 ```{r}
 inflation_indicators_reshape <- inflation_indicators_reshape %>%
   mutate(
-    Indicator = paste0("Price Level (Oblast): ", Category, " (per ", `Unit of measure`, ")")
-  ) %>%
-  rename(Value = `Price level`) %>%  # rename for consistency with other datasets
-  select(Region = Region, Date, Y, M, Indicator, Value)  # choose final columns
-```
-
-## Join with existing dataset.
-
-Unfortunately our ACLED+ dataset has only cities, but each corresponds 1-to-1 
-as the center of an oblast. So we will merge with the idea of these being 
-"Price Levels (Oblast)" rather than for the city itself.
-```{r}
-unique(acled_work_imo_inner_join$City)
-unique(inflation_indicators_fulldata$Region)
-
-#Create a dictionary to make the merging repeatable [region = city]
-city_region_dict <- c(
-  "Vinnytsia"       = "Vinnytska",
-  "Zhytomyr"        = "Zhytomyrska",
-  "Ivano-Frankivsk" = "Ivano-Frankivska",
-  "Kirovohrad"      = "Kirovohradska",
-  "Lviv"            = "Lvivska",
-  "Poltava"         = "Poltavska",
-  "Zakarpattia"     = "Zakarpatska",
-  "Khmelnytskyi"    = "Khmelnytska",
-  "Chernivtsi"      = "Chernivetska",
-  "Kyiv"            = "Kyivska",
-  "Dnipropetrovsk"  = "Dnipropetrovska",
-  "Odesa"           = "Odeska",
-  "Zaporizhia"      = "Zaporizka",
-  "Volyn"           = "Volynska",
-  "Rivne"           = "Rivnenska",
-  "Sumy"            = "Sumska",
-  "Ternopil"        = "Ternopilska",
-  "Cherkasy"        = "Cherkaska",
-  "Chernihiv"       = "Chernihivska",
-  "Mykolaiv"        = "Mykolaivska",
-  "Kharkiv"         = "Kharkivska",
-  "Donetsk"         = "Donetska",
-  "Kherson"         = "Khersonska"
-)
-```
-
-```{r}
-#Add the region column
-acled_work_imo_inner_join <- acled_work_imo_inner_join %>%
-  mutate(Region = city_region_dict[City])
-
-#Make the inflation data also match
-inflation_indicators_reshape <- inflation_indicators_reshape %>%
-  mutate(
-    City = NA_character_
-  ) %>%
-  select(City, Date, Y, M, Indicator, Value, Region)
+    Indicator = paste0("Price Level: ", Category, " (per ", `Unit of measure`, ")"),
+    City = NA,
+    Source = "Ukrstat") %>%
+  rename(Value = `Price level`)  %>%
+  select(City, Date, Y, M, Indicator, Value, Source, Region)
 ```
 
 ```{r}
@@ -334,9 +392,10 @@ MASTER_DATASET <- MASTER_DATASET %>%
   arrange(City, Date, Indicator)
 ```
 
+
 ## Export with timestamp.
 
 ```{r}
-write_csv(MASTER_DATASET, "Datasets/1 _ Merged datasets/Fulldata_City_Region_Monthly_Oct292025.csv")
+write_csv(MASTER_DATASET, "Datasets/1 _ Merged datasets/Fulldata_City_Region_Monthly_Nov052025.csv")
 ```
 
